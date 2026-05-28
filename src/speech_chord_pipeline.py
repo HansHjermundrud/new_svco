@@ -128,7 +128,10 @@ def _transcribe_with_vosk(audio: Any, sample_rate: int, model_path: str) -> tupl
 
     audio_int16 = (audio * _INT16_MAX).clip(-_INT16_MAX, _INT16_MAX - 1).astype(np.int16)
     recognizer.AcceptWaveform(audio_int16.tobytes())
-    result = json.loads(recognizer.Result() or "{}")
+    try:
+        result = json.loads(recognizer.Result() or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Speech recognition returned invalid JSON output.") from exc
     text = str(result.get("text", "")).strip()
 
     confidence = 1.0
@@ -174,8 +177,8 @@ def _collapse_chord_frames(
             if current_label is not None:
                 duration = current_frames * frame_duration
                 if duration >= min_duration:
-                    avg_score = sum(current_scores) / len(current_scores)
-                    collapsed.append((current_label, max(0.0, min(1.0, avg_score))))
+                    avg_score = _average_score(current_scores)
+                    collapsed.append((current_label, avg_score))
             current_label = label
             current_scores = [score]
             current_frames = 1
@@ -186,8 +189,8 @@ def _collapse_chord_frames(
     if current_label is not None:
         duration = current_frames * frame_duration
         if duration >= min_duration:
-            avg_score = sum(current_scores) / len(current_scores)
-            collapsed.append((current_label, max(0.0, min(1.0, avg_score))))
+            avg_score = _average_score(current_scores)
+            collapsed.append((current_label, avg_score))
 
     return collapsed
 
@@ -213,13 +216,26 @@ def _detect_chords(audio: Any, sample_rate: int, config: ChordDetectionConfig) -
 
     best_indices = np.argmax(scores, axis=0)
     best_scores = scores[best_indices, np.arange(scores.shape[1])]
-    frame_labels = [
-        labels[int(idx)] if score >= config.similarity_threshold else None
-        for idx, score in zip(best_indices, best_scores)
-    ]
+    frame_labels: list[str | None] = []
+    frame_scores: list[float] = []
+    for idx, score in zip(best_indices, best_scores):
+        if score >= config.similarity_threshold:
+            frame_labels.append(labels[int(idx)])
+            frame_scores.append(float(score))
+        else:
+            frame_labels.append(None)
+            frame_scores.append(0.0)
 
     frame_duration = config.hop_length / float(sample_rate)
-    return _collapse_chord_frames(frame_labels, best_scores, frame_duration, config.min_chord_duration)
+    return _collapse_chord_frames(frame_labels, frame_scores, frame_duration, config.min_chord_duration)
+
+
+def _average_score(scores: Iterable[float]) -> float:
+    scores_list = list(scores)
+    if not scores_list:
+        return 0.0
+    avg_score = sum(scores_list) / len(scores_list)
+    return max(0.0, min(1.0, avg_score))
 
 
 @dataclass(slots=True)
