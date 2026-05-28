@@ -60,6 +60,13 @@ def _capture_audio_segment(config: MicrophoneConfig) -> tuple[Any, int]:
     np = _load_optional_dependency("numpy", "numpy")
     sd = _load_optional_dependency("sounddevice", "sounddevice")
 
+    if config.block_duration <= 0:
+        raise ValueError("block_duration must be greater than 0")
+    if config.sample_rate <= 0:
+        raise ValueError("sample_rate must be greater than 0")
+    if config.channels <= 0:
+        raise ValueError("channels must be greater than 0")
+
     blocksize = max(1, int(config.sample_rate * config.block_duration))
     max_blocks = int(config.max_segment_duration / config.block_duration) if config.max_segment_duration else None
     start_timeout_blocks = int(config.start_timeout / config.block_duration) if config.start_timeout else None
