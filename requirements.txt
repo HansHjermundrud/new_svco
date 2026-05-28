@@ -1,4 +1,4 @@
-librosa
-numpy
-sounddevice
-vosk
+librosa>=0.10.0
+numpy>=1.23.0
+sounddevice>=0.4.6
+vosk>=0.3.45

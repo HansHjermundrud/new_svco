@@ -12,7 +12,9 @@ from typing import Any, Iterable
 _CHORD_RE = re.compile(
     r"^[A-G](?:#|b)?(?:(?:(?:m|min|maj|dim|aug)?\d*(?:(?:sus|add)\d+)?)|(?:(?:sus|add)\d+))?(?:/[A-G](?:#|b)?)?$"
 )
-_INT16_MAX = 32768
+_CHROMATIC_ROOTS = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
+_INT16_MAX = 32767
+_INT16_MIN = -32768
 _NORMALIZATION_EPSILON = 1e-9
 
 
@@ -126,7 +128,7 @@ def _transcribe_with_vosk(audio: Any, sample_rate: int, model_path: str) -> tupl
     model = vosk.Model(model_path)
     recognizer = vosk.KaldiRecognizer(model, sample_rate)
 
-    audio_int16 = (audio * _INT16_MAX).clip(-_INT16_MAX, _INT16_MAX - 1).astype(np.int16)
+    audio_int16 = (audio * _INT16_MAX).clip(_INT16_MIN, _INT16_MAX).astype(np.int16)
     recognizer.AcceptWaveform(audio_int16.tobytes())
     try:
         result = json.loads(recognizer.Result() or "{}")
@@ -142,22 +144,21 @@ def _transcribe_with_vosk(audio: Any, sample_rate: int, model_path: str) -> tupl
     return text, confidence
 
 
-def _build_chord_templates(np_module: Any) -> tuple[Any, list[str]]:
-    roots = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
+def _build_chord_templates(np: Any) -> tuple[Any, list[str]]:
     templates = []
     labels = []
-    for root_index, root in enumerate(roots):
-        major = np_module.zeros(12, dtype="float32")
+    for root_index, root in enumerate(_CHROMATIC_ROOTS):
+        major = np.zeros(12, dtype="float32")
         major[[root_index, (root_index + 4) % 12, (root_index + 7) % 12]] = 1.0
-        minor = np_module.zeros(12, dtype="float32")
+        minor = np.zeros(12, dtype="float32")
         minor[[root_index, (root_index + 3) % 12, (root_index + 7) % 12]] = 1.0
         templates.append(major)
         labels.append(root)
         templates.append(minor)
         labels.append(f"{root}m")
 
-    templates = np_module.stack(templates, axis=0)
-    templates = templates / (np_module.linalg.norm(templates, axis=1, keepdims=True) + _NORMALIZATION_EPSILON)
+    templates = np.stack(templates, axis=0)
+    templates = templates / (np.linalg.norm(templates, axis=1, keepdims=True) + _NORMALIZATION_EPSILON)
     return templates, labels
 
 
@@ -295,6 +296,7 @@ class SpeechChordRecorder:
         microphone: MicrophoneConfig | None = None,
         chord_config: ChordDetectionConfig | None = None,
     ) -> tuple[SpeechEvent, list[ChordEvent]]:
+        """Capture a speech segment followed by a chord segment with a pause between."""
         mic_config = microphone or MicrophoneConfig()
         chord_config = chord_config or ChordDetectionConfig()
 
