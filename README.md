@@ -34,6 +34,25 @@ payload = recorder.to_claude_payload(
 
 `payload` is the handoff object for Claude to route via MCP to the rest of the system.
 
+## Microphone capture
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Download a Vosk model and provide the local path (for example, `vosk-model-small-en-us-0.15`).
+
+```python
+from src.speech_chord_pipeline import SpeechChordRecorder
+
+recorder = SpeechChordRecorder()
+speech_event, chord_events = recorder.record_from_microphone(
+    speech_model_path="/path/to/vosk-model-small-en-us-0.15",
+)
+```
+
 ## Run tests
 
 ```bash
