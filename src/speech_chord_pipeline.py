@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import importlib
+import json
 import re
-from typing import Any
+from typing import Any, Iterable
 
 # Root note + optional accidental + optional quality/extensions + optional slash bass note.
 # `sus` and `add` forms require an explicit numeric extension (e.g. sus4, add9).
@@ -24,6 +26,190 @@ class ChordEvent:
     chord: str
     timestamp_utc: str
     confidence: float = 1.0
+
+
+@dataclass(slots=True)
+class MicrophoneConfig:
+    sample_rate: int = 16000
+    channels: int = 1
+    block_duration: float = 0.1
+    silence_duration: float = 0.8
+    energy_threshold: float = 0.015
+    max_segment_duration: float = 12.0
+    start_timeout: float = 15.0
+
+
+@dataclass(slots=True)
+class ChordDetectionConfig:
+    target_sample_rate: int = 22050
+    hop_length: int = 512
+    min_chord_duration: float = 0.25
+    similarity_threshold: float = 0.35
+
+
+def _load_optional_dependency(module: str, install_hint: str) -> Any:
+    try:
+        return importlib.import_module(module)
+    except ImportError as exc:
+        raise ImportError(
+            f"Missing optional dependency '{module}'. Install it with: pip install {install_hint}"
+        ) from exc
+
+
+def _capture_audio_segment(config: MicrophoneConfig) -> tuple[Any, int]:
+    np = _load_optional_dependency("numpy", "numpy")
+    sd = _load_optional_dependency("sounddevice", "sounddevice")
+
+    blocksize = max(1, int(config.sample_rate * config.block_duration))
+    max_blocks = int(config.max_segment_duration / config.block_duration) if config.max_segment_duration else None
+    start_timeout_blocks = int(config.start_timeout / config.block_duration) if config.start_timeout else None
+
+    blocks: list[Any] = []
+    started = False
+    silence_blocks = 0
+    waited_blocks = 0
+
+    with sd.InputStream(
+        samplerate=config.sample_rate,
+        channels=config.channels,
+        dtype="float32",
+        blocksize=blocksize,
+    ) as stream:
+        while True:
+            block, _ = stream.read(blocksize)
+            waited_blocks += 1
+            block = np.asarray(block)
+            rms = float(np.sqrt(np.mean(block**2)))
+
+            if rms >= config.energy_threshold:
+                started = True
+                silence_blocks = 0
+                blocks.append(block)
+            elif started:
+                silence_blocks += 1
+                blocks.append(block)
+                if silence_blocks * config.block_duration >= config.silence_duration:
+                    break
+            elif start_timeout_blocks and waited_blocks >= start_timeout_blocks:
+                break
+
+            if max_blocks and len(blocks) >= max_blocks:
+                break
+
+    if not blocks:
+        raise RuntimeError("No audio detected before timeout.")
+
+    if silence_blocks:
+        blocks = blocks[:-silence_blocks] or blocks
+
+    audio = np.concatenate(blocks, axis=0).astype("float32")
+    if config.channels > 1:
+        audio = np.mean(audio, axis=1)
+    else:
+        audio = audio.reshape(-1)
+    return audio, config.sample_rate
+
+
+def _transcribe_with_vosk(audio: Any, sample_rate: int, model_path: str) -> tuple[str, float]:
+    np = _load_optional_dependency("numpy", "numpy")
+    vosk = _load_optional_dependency("vosk", "vosk")
+
+    model = vosk.Model(model_path)
+    recognizer = vosk.KaldiRecognizer(model, sample_rate)
+
+    audio_int16 = (audio * 32768).clip(-32768, 32767).astype(np.int16)
+    recognizer.AcceptWaveform(audio_int16.tobytes())
+    result = json.loads(recognizer.Result() or "{}")
+    text = str(result.get("text", "")).strip()
+
+    confidence = 1.0
+    words = result.get("result", [])
+    if isinstance(words, list) and words:
+        confidence = float(sum(word.get("conf", 0.0) for word in words) / len(words))
+    return text, confidence
+
+
+def _build_chord_templates(np_module: Any) -> tuple[Any, list[str]]:
+    roots = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
+    templates = []
+    labels = []
+    for root_index, root in enumerate(roots):
+        major = np_module.zeros(12, dtype="float32")
+        major[[root_index, (root_index + 4) % 12, (root_index + 7) % 12]] = 1.0
+        minor = np_module.zeros(12, dtype="float32")
+        minor[[root_index, (root_index + 3) % 12, (root_index + 7) % 12]] = 1.0
+        templates.append(major)
+        labels.append(root)
+        templates.append(minor)
+        labels.append(f"{root}m")
+
+    templates = np_module.stack(templates, axis=0)
+    templates = templates / (np_module.linalg.norm(templates, axis=1, keepdims=True) + 1e-9)
+    return templates, labels
+
+
+def _collapse_chord_frames(
+    labels: Iterable[str | None],
+    scores: Iterable[float],
+    frame_duration: float,
+    min_duration: float,
+) -> list[tuple[str, float]]:
+    collapsed: list[tuple[str, float]] = []
+    current_label: str | None = None
+    current_scores: list[float] = []
+    current_frames = 0
+
+    for label, score in zip(labels, scores):
+        if label != current_label:
+            if current_label is not None:
+                duration = current_frames * frame_duration
+                if duration >= min_duration:
+                    avg_score = sum(current_scores) / len(current_scores)
+                    collapsed.append((current_label, avg_score))
+            current_label = label
+            current_scores = [score]
+            current_frames = 1
+        else:
+            current_scores.append(score)
+            current_frames += 1
+
+    if current_label is not None:
+        duration = current_frames * frame_duration
+        if duration >= min_duration:
+            avg_score = sum(current_scores) / len(current_scores)
+            collapsed.append((current_label, avg_score))
+
+    return collapsed
+
+
+def _detect_chords(audio: Any, sample_rate: int, config: ChordDetectionConfig) -> list[tuple[str, float]]:
+    np = _load_optional_dependency("numpy", "numpy")
+    librosa = _load_optional_dependency("librosa", "librosa")
+
+    if audio.size == 0:
+        return []
+
+    if sample_rate != config.target_sample_rate:
+        audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=config.target_sample_rate)
+        sample_rate = config.target_sample_rate
+
+    chroma = librosa.feature.chroma_cqt(y=audio, sr=sample_rate, hop_length=config.hop_length)
+    if chroma.size == 0:
+        return []
+
+    chroma_norm = chroma / (np.linalg.norm(chroma, axis=0, keepdims=True) + 1e-9)
+    templates, labels = _build_chord_templates(np)
+    scores = templates @ chroma_norm
+
+    best_indices = np.argmax(scores, axis=0)
+    best_scores = scores[best_indices, np.arange(scores.shape[1])]
+    frame_labels = [
+        labels[int(idx)] if score >= config.similarity_threshold else None
+        for idx, score in zip(best_indices, best_scores)
+    ]
+
+    frame_duration = config.hop_length / float(sample_rate)
+    return _collapse_chord_frames(frame_labels, best_scores, frame_duration, config.min_chord_duration)
 
 
 @dataclass(slots=True)
@@ -75,6 +261,28 @@ class SpeechChordRecorder:
         event = ChordEvent(chord=normalized, timestamp_utc=self._normalize_timestamp(timestamp_utc), confidence=confidence)
         self.chord_events.append(event)
         return event
+
+    def record_from_microphone(
+        self,
+        *,
+        speech_model_path: str,
+        microphone: MicrophoneConfig | None = None,
+        chord_config: ChordDetectionConfig | None = None,
+    ) -> tuple[SpeechEvent, list[ChordEvent]]:
+        mic_config = microphone or MicrophoneConfig()
+        chord_config = chord_config or ChordDetectionConfig()
+
+        speech_audio, sample_rate = _capture_audio_segment(mic_config)
+        speech_text, speech_confidence = _transcribe_with_vosk(speech_audio, sample_rate, speech_model_path)
+        if not speech_text:
+            raise RuntimeError("Speech recognition returned empty text.")
+
+        speech_event = self.record_speech(speech_text, confidence=speech_confidence)
+
+        chord_audio, chord_rate = _capture_audio_segment(mic_config)
+        detected = _detect_chords(chord_audio, chord_rate, chord_config)
+        chord_events = [self.record_chord(label, confidence=confidence) for label, confidence in detected]
+        return speech_event, chord_events
 
     def transcript(self) -> str:
         return " ".join(event.text for event in self.speech_events)
