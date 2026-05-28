@@ -126,6 +126,7 @@ def _transcribe_with_vosk(audio: Any, sample_rate: int, model_path: str) -> tupl
     words = result.get("result", [])
     if isinstance(words, list) and words:
         confidence = float(sum(word.get("conf", 0.0) for word in words) / len(words))
+    confidence = max(0.0, min(1.0, confidence))
     return text, confidence
 
 
@@ -165,7 +166,7 @@ def _collapse_chord_frames(
                 duration = current_frames * frame_duration
                 if duration >= min_duration:
                     avg_score = sum(current_scores) / len(current_scores)
-                    collapsed.append((current_label, avg_score))
+                    collapsed.append((current_label, max(0.0, min(1.0, avg_score))))
             current_label = label
             current_scores = [score]
             current_frames = 1
@@ -177,7 +178,7 @@ def _collapse_chord_frames(
         duration = current_frames * frame_duration
         if duration >= min_duration:
             avg_score = sum(current_scores) / len(current_scores)
-            collapsed.append((current_label, avg_score))
+            collapsed.append((current_label, max(0.0, min(1.0, avg_score))))
 
     return collapsed
 
