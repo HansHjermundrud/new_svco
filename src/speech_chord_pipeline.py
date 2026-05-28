@@ -12,6 +12,8 @@ from typing import Any, Iterable
 _CHORD_RE = re.compile(
     r"^[A-G](?:#|b)?(?:(?:(?:m|min|maj|dim|aug)?\d*(?:(?:sus|add)\d+)?)|(?:(?:sus|add)\d+))?(?:/[A-G](?:#|b)?)?$"
 )
+_INT16_MAX = 32768
+_NORMALIZATION_EPSILON = 1e-9
 
 
 @dataclass(slots=True)
@@ -107,7 +109,7 @@ def _capture_audio_segment(config: MicrophoneConfig) -> tuple[Any, int]:
         raise RuntimeError("No audio detected before timeout.")
 
     if silence_blocks:
-        blocks = blocks[:-silence_blocks] or blocks
+        blocks = blocks[:-silence_blocks]
 
     audio = np.concatenate(blocks, axis=0).astype("float32")
     if config.channels > 1:
@@ -124,7 +126,7 @@ def _transcribe_with_vosk(audio: Any, sample_rate: int, model_path: str) -> tupl
     model = vosk.Model(model_path)
     recognizer = vosk.KaldiRecognizer(model, sample_rate)
 
-    audio_int16 = (audio * 32768).clip(-32768, 32767).astype(np.int16)
+    audio_int16 = (audio * _INT16_MAX).clip(-_INT16_MAX, _INT16_MAX - 1).astype(np.int16)
     recognizer.AcceptWaveform(audio_int16.tobytes())
     result = json.loads(recognizer.Result() or "{}")
     text = str(result.get("text", "")).strip()
@@ -152,7 +154,7 @@ def _build_chord_templates(np_module: Any) -> tuple[Any, list[str]]:
         labels.append(f"{root}m")
 
     templates = np_module.stack(templates, axis=0)
-    templates = templates / (np_module.linalg.norm(templates, axis=1, keepdims=True) + 1e-9)
+    templates = templates / (np_module.linalg.norm(templates, axis=1, keepdims=True) + _NORMALIZATION_EPSILON)
     return templates, labels
 
 
@@ -205,7 +207,7 @@ def _detect_chords(audio: Any, sample_rate: int, config: ChordDetectionConfig) -
     if chroma.size == 0:
         return []
 
-    chroma_norm = chroma / (np.linalg.norm(chroma, axis=0, keepdims=True) + 1e-9)
+    chroma_norm = chroma / (np.linalg.norm(chroma, axis=0, keepdims=True) + _NORMALIZATION_EPSILON)
     templates, labels = _build_chord_templates(np)
     scores = templates @ chroma_norm
 
@@ -287,8 +289,8 @@ class SpeechChordRecorder:
 
         speech_event = self.record_speech(speech_text, confidence=speech_confidence)
 
-        chord_audio, chord_rate = _capture_audio_segment(mic_config)
-        detected = _detect_chords(chord_audio, chord_rate, chord_config)
+        chord_audio, chord_sample_rate = _capture_audio_segment(mic_config)
+        detected = _detect_chords(chord_audio, chord_sample_rate, chord_config)
         chord_events = [self.record_chord(label, confidence=confidence) for label, confidence in detected]
         return speech_event, chord_events
 
