@@ -162,6 +162,14 @@ def _build_chord_templates(np: Any) -> tuple[Any, list[str]]:
     return templates, labels
 
 
+def _average_score(scores: Iterable[float]) -> float:
+    scores_list = list(scores)
+    if not scores_list:
+        return 0.0
+    avg_score = sum(scores_list) / len(scores_list)
+    return max(0.0, min(1.0, avg_score))
+
+
 def _collapse_chord_frames(
     labels: Iterable[str | None],
     scores: Iterable[float],
@@ -231,14 +239,6 @@ def _detect_chords(audio: Any, sample_rate: int, config: ChordDetectionConfig) -
     return _collapse_chord_frames(frame_labels, frame_scores, frame_duration, config.min_chord_duration)
 
 
-def _average_score(scores: Iterable[float]) -> float:
-    scores_list = list(scores)
-    if not scores_list:
-        return 0.0
-    avg_score = sum(scores_list) / len(scores_list)
-    return max(0.0, min(1.0, avg_score))
-
-
 @dataclass(slots=True)
 class SpeechChordRecorder:
     speech_events: list[SpeechEvent] = field(default_factory=list)
@@ -296,7 +296,7 @@ class SpeechChordRecorder:
         microphone: MicrophoneConfig | None = None,
         chord_config: ChordDetectionConfig | None = None,
     ) -> tuple[SpeechEvent, list[ChordEvent]]:
-        """Capture a speech segment followed by a chord segment with a pause between."""
+        """Capture a speech segment, then a chord segment (expects a pause in between)."""
         mic_config = microphone or MicrophoneConfig()
         chord_config = chord_config or ChordDetectionConfig()
 
