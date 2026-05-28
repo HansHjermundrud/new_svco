@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import re
 from typing import Any
 
+# Root note + optional accidental + optional quality/extension + optional slash bass note.
 _CHORD_RE = re.compile(r"^[A-G](?:#|b)?(?:m|maj|min|dim|aug|sus|add)?[0-9]*(?:/[A-G](?:#|b)?)?$")
 
 
@@ -32,6 +33,11 @@ class SpeechChordRecorder:
         return datetime.now(timezone.utc).isoformat()
 
     @staticmethod
+    def _validate_confidence(confidence: float) -> None:
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("confidence must be between 0.0 and 1.0")
+
+    @staticmethod
     def normalize_chord(chord: str) -> str:
         token = chord.strip().replace(" ", "")
         if not token:
@@ -44,11 +50,13 @@ class SpeechChordRecorder:
     def record_speech(self, text: str, confidence: float = 1.0, timestamp_utc: str | None = None) -> SpeechEvent:
         if not text or not text.strip():
             raise ValueError("Speech text cannot be empty")
+        self._validate_confidence(confidence)
         event = SpeechEvent(text=text.strip(), timestamp_utc=timestamp_utc or self._now(), confidence=confidence)
         self.speech_events.append(event)
         return event
 
     def record_chord(self, chord: str, confidence: float = 1.0, timestamp_utc: str | None = None) -> ChordEvent:
+        self._validate_confidence(confidence)
         normalized = self.normalize_chord(chord)
         event = ChordEvent(chord=normalized, timestamp_utc=timestamp_utc or self._now(), confidence=confidence)
         self.chord_events.append(event)
@@ -69,7 +77,7 @@ class SpeechChordRecorder:
         next_section: str | None = None,
     ) -> dict[str, Any]:
         if mode not in {"generate", "extend", "section"}:
-            raise ValueError("mode must be one of: generate, extend, section")
+            raise ValueError(f"Invalid mode: {mode!r}. Must be one of: generate, extend, section")
 
         seed = " ".join(self.chord_progression())
         context: dict[str, Any] = {

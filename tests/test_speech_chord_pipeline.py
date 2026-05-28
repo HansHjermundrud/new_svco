@@ -28,6 +28,24 @@ class SpeechChordRecorderTests(unittest.TestCase):
         self.assertEqual(payload["chord_generator_context"]["next_section"], "chorus")
         self.assertEqual(payload["claude_task"]["action"], "route_to_mcp")
 
+    def test_builds_payload_for_generate_and_extend_modes(self):
+        recorder = SpeechChordRecorder()
+        recorder.record_speech("start from scratch")
+        recorder.record_chord("Am")
+
+        generate_payload = recorder.to_claude_payload(genre="pop", decade=2010, mode="generate")
+        self.assertNotIn("seed_chords", generate_payload["chord_generator_context"])
+
+        extend_payload = recorder.to_claude_payload(genre="rock", decade=1990, mode="extend")
+        self.assertEqual(extend_payload["chord_generator_context"]["seed_chords"], "Am")
+
+    def test_rejects_out_of_range_confidence(self):
+        recorder = SpeechChordRecorder()
+        with self.assertRaises(ValueError):
+            recorder.record_speech("hello", confidence=1.1)
+        with self.assertRaises(ValueError):
+            recorder.record_chord("C", confidence=-0.1)
+
     def test_rejects_invalid_chord(self):
         recorder = SpeechChordRecorder()
         with self.assertRaises(ValueError):
