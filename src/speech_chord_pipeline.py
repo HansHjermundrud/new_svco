@@ -13,6 +13,7 @@ _CHORD_RE = re.compile(
     r"^[A-G](?:#|b)?(?:(?:(?:m|min|maj|dim|aug)?\d*(?:(?:sus|add)\d+)?)|(?:(?:sus|add)\d+))?(?:/[A-G](?:#|b)?)?$"
 )
 _CHROMATIC_ROOTS = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
+_INT16_SCALE = 32768
 _INT16_MAX = 32767
 _INT16_MIN = -32768
 _NORMALIZATION_EPSILON = 1e-9
@@ -128,7 +129,7 @@ def _transcribe_with_vosk(audio: Any, sample_rate: int, model_path: str) -> tupl
     model = vosk.Model(model_path)
     recognizer = vosk.KaldiRecognizer(model, sample_rate)
 
-    audio_int16 = (audio * _INT16_MAX).clip(_INT16_MIN, _INT16_MAX).astype(np.int16)
+    audio_int16 = (audio * _INT16_SCALE).clip(_INT16_MIN, _INT16_MAX).astype(np.int16)
     recognizer.AcceptWaveform(audio_int16.tobytes())
     try:
         result = json.loads(recognizer.Result() or "{}")
@@ -296,7 +297,16 @@ class SpeechChordRecorder:
         microphone: MicrophoneConfig | None = None,
         chord_config: ChordDetectionConfig | None = None,
     ) -> tuple[SpeechEvent, list[ChordEvent]]:
-        """Capture a speech segment, then a chord segment (expects a pause in between)."""
+        """Capture a speech segment, then a chord segment (expects a pause in between).
+
+        Args:
+            speech_model_path: Path to the Vosk model directory to use.
+            microphone: Optional microphone configuration override.
+            chord_config: Optional chord detection configuration override.
+
+        Returns:
+            The recorded speech event and a list of detected chord events.
+        """
         mic_config = microphone or MicrophoneConfig()
         chord_config = chord_config or ChordDetectionConfig()
 
