@@ -5,8 +5,11 @@ from datetime import datetime, timezone
 import re
 from typing import Any
 
-# Root note + optional accidental + optional quality/extension + optional slash bass note.
-_CHORD_RE = re.compile(r"^[A-G](?:#|b)?(?:m|maj|min|dim|aug|sus|add)?[0-9]*(?:/[A-G](?:#|b)?)?$")
+# Root note + optional accidental + optional quality/extensions + optional slash bass note.
+# `sus` and `add` forms require an explicit numeric extension (e.g. sus4, add9).
+_CHORD_RE = re.compile(
+    r"^[A-G](?:#|b)?(?:(?:(?:m|min|maj|dim|aug)?\d*(?:(?:sus|add)\d+)?)|(?:(?:sus|add)\d+))?(?:/[A-G](?:#|b)?)?$"
+)
 
 
 @dataclass(slots=True)
@@ -38,7 +41,18 @@ class SpeechChordRecorder:
             raise ValueError("confidence must be between 0.0 and 1.0")
 
     @staticmethod
-    def normalize_chord(chord: str) -> str:
+    def _normalize_timestamp(timestamp_utc: str | None) -> str:
+        if timestamp_utc is None:
+            return SpeechChordRecorder._now()
+        normalized = timestamp_utc.replace("Z", "+00:00")
+        try:
+            datetime.fromisoformat(normalized)
+        except ValueError as exc:
+            raise ValueError("timestamp_utc must be an ISO-8601 datetime string") from exc
+        return normalized
+
+    @staticmethod
+    def _normalize_chord(chord: str) -> str:
         token = chord.strip().replace(" ", "")
         if not token:
             raise ValueError("Chord token cannot be empty")
@@ -51,14 +65,14 @@ class SpeechChordRecorder:
         if not text or not text.strip():
             raise ValueError("Speech text cannot be empty")
         self._validate_confidence(confidence)
-        event = SpeechEvent(text=text.strip(), timestamp_utc=timestamp_utc or self._now(), confidence=confidence)
+        event = SpeechEvent(text=text.strip(), timestamp_utc=self._normalize_timestamp(timestamp_utc), confidence=confidence)
         self.speech_events.append(event)
         return event
 
     def record_chord(self, chord: str, confidence: float = 1.0, timestamp_utc: str | None = None) -> ChordEvent:
         self._validate_confidence(confidence)
-        normalized = self.normalize_chord(chord)
-        event = ChordEvent(chord=normalized, timestamp_utc=timestamp_utc or self._now(), confidence=confidence)
+        normalized = self._normalize_chord(chord)
+        event = ChordEvent(chord=normalized, timestamp_utc=self._normalize_timestamp(timestamp_utc), confidence=confidence)
         self.chord_events.append(event)
         return event
 
@@ -87,7 +101,9 @@ class SpeechChordRecorder:
         }
         if mode in {"extend", "section"}:
             context["seed_chords"] = seed
-        if mode == "section" and next_section:
+        if mode == "section":
+            if not next_section:
+                raise ValueError("next_section is required when mode='section'")
             context["next_section"] = next_section
 
         return {
